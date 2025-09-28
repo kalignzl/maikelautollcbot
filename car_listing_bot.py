@@ -34,14 +34,16 @@ class CarListing:
     model: str = ""
     year: str = ""
     mileage: str = ""
+    price: str = ""           # <-- NEW
     vin: str = ""
     photos: List[str] = field(default_factory=list)  # Telegram file_ids
 
 # --- States ---
-(S_MAKE, S_MODEL, S_YEAR, S_MILEAGE, S_VIN, S_PHOTOS) = range(6)
+(S_MAKE, S_MODEL, S_YEAR, S_MILEAGE, S_PRICE, S_VIN, S_PHOTOS) = range(7)  # <-- NEW S_PRICE
 
 # --- Validators ---
 VIN_REGEX = re.compile(r"^[A-HJ-NPR-Z0-9]{17}$", re.IGNORECASE)  # 17 chars, no I/O/Q
+PRICE_CLEANER = re.compile(r"[^\d\.]")  # remove everything except digits and dot
 
 def is_valid_year(t: str) -> bool:
     return t.isdigit() and 1900 <= int(t) <= 2100
@@ -54,13 +56,41 @@ def is_valid_vin(t: str) -> bool:
     v = t.strip().upper().replace(" ", "")
     return bool(VIN_REGEX.match(v))
 
+def normalize_price(p: str) -> str:
+    """
+    Accepts formats like $12,500, 12500, 12,500.00
+    Returns a normalized string like '12500.00' (two decimals).
+    """
+    cleaned = PRICE_CLEANER.sub("", p)  # remove $, commas, spaces, etc. keep digits and dot
+    if cleaned.count(".") > 1:
+        return ""  # too many dots => invalid
+    # if no dot, treat as integer dollars
+    try:
+        val = float(cleaned) if "." in cleaned else float(int(cleaned))
+        return f"{val:.2f}"
+    except Exception:
+        return ""
+
+def format_currency(normalized: str) -> str:
+    # normalized must be like '12500.00'
+    try:
+        val = float(normalized)
+        # add thousand separators
+        whole, frac = f"{val:.2f}".split(".")
+        whole_with_commas = "{:,}".format(int(whole))
+        return f"${whole_with_commas}.{frac}"
+    except Exception:
+        return normalized
+
 def fmt_listing(lst: CarListing) -> str:
+    price_line = f"• Price: *{format_currency(lst.price)}*\n" if lst.price else ""
     return (
         "📋 *New Car Listing*\n"
         f"• Make: *{lst.make}*\n"
         f"• Model: *{lst.model}*\n"
         f"• Year: *{lst.year}*\n"
         f"• Mileage: *{lst.mileage}*\n"
+        f"{price_line}"
         f"• VIN: *{lst.vin}*\n"
         f"• Photos: {len(lst.photos)}"
     )
@@ -69,7 +99,7 @@ def fmt_listing(lst: CarListing) -> str:
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["listing"] = CarListing()
     await update.message.reply_text(
-        "Welcome! We'll collect: make, model, year, mileage, VIN, and up to 12 photos.\n"
+        "Welcome! We'll collect: make, model, year, mileage, price, VIN, and up to 12 photos.\n"
         "Type /cancel anytime to stop.\n\n"
         "First, what's the *Make*?"
     )
@@ -112,6 +142,16 @@ async def step_mileage(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Send a valid mileage (e.g., 72500).")
         return S_MILEAGE
     context.user_data["listing"].mileage = mileage.replace(",", "")
+    await update.message.reply_text("Price? (e.g., 12,500 or $12500)")
+    return S_PRICE
+
+async def step_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    raw = update.message.text.strip()
+    normalized = normalize_price(raw)
+    if not normalized:
+        await update.message.reply_text("Invalid price. Send a number like 12500 or $12,500.00")
+        return S_PRICE
+    context.user_data["listing"].price = normalized
     await update.message.reply_text("VIN? (17 characters, no I/O/Q)")
     return S_VIN
 
@@ -175,6 +215,7 @@ def main():
             S_MODEL:  [MessageHandler(filters.TEXT & ~filters.COMMAND, step_model)],
             S_YEAR:   [MessageHandler(filters.TEXT & ~filters.COMMAND, step_year)],
             S_MILEAGE:[MessageHandler(filters.TEXT & ~filters.COMMAND, step_mileage)],
+            S_PRICE:  [MessageHandler(filters.TEXT & ~filters.COMMAND, step_price)],   # <-- NEW
             S_VIN:    [MessageHandler(filters.TEXT & ~filters.COMMAND, step_vin)],
             S_PHOTOS: [
                 MessageHandler(filters.PHOTO, step_collect_photo),
